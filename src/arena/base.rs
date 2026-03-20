@@ -13,18 +13,11 @@ use super::temp::TempArena;
 
 struct ArenaInner {
     cursor: usize,
-    drops: Vec<DropRecord>,
-}
-
-struct DropRecord {
-    ptr: *mut u8,
-    drop_fn: unsafe fn(*mut u8),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Checkpoint {
     cursor: usize,
-    drops_len: usize,
 }
 
 pub struct Arena {
@@ -56,10 +49,7 @@ impl Arena {
                 cap: reserve_size,
                 page_size,
                 committed: UnsafeCell::new(0),
-                inner: UnsafeCell::new(ArenaInner {
-                    cursor: 0,
-                    drops: Vec::new(),
-                }),
+                inner: UnsafeCell::new(ArenaInner { cursor: 0 }),
                 _not_sync: PhantomData,
             };
         }
@@ -75,10 +65,7 @@ impl Arena {
                 ptr,
                 cap,
                 layout,
-                inner: UnsafeCell::new(ArenaInner {
-                    cursor: 0,
-                    drops: Vec::new(),
-                }),
+                inner: UnsafeCell::new(ArenaInner { cursor: 0 }),
                 _not_sync: PhantomData,
             }
         }
@@ -100,7 +87,6 @@ impl Arena {
         let inner = self.inner();
         Checkpoint {
             cursor: inner.cursor,
-            drops_len: inner.drops.len(),
         }
     }
 
@@ -110,25 +96,11 @@ impl Arena {
             "checkpoint cursor is out of range"
         );
 
-        let inner = self.inner_mut();
-        assert!(
-            checkpoint.drops_len <= inner.drops.len(),
-            "checkpoint drop stack is out of range"
-        );
-
-        while inner.drops.len() > checkpoint.drops_len {
-            let record = inner.drops.pop().expect("drop stack underflow");
-            unsafe { (record.drop_fn)(record.ptr) };
-        }
-
-        inner.cursor = checkpoint.cursor;
+        self.inner_mut().cursor = checkpoint.cursor;
     }
 
     pub fn clear(&self) {
-        self.rewind(Checkpoint {
-            cursor: 0,
-            drops_len: 0,
-        });
+        self.rewind(Checkpoint { cursor: 0 });
     }
 
     pub fn temp(&self) -> TempArena<'_> {
@@ -136,15 +108,16 @@ impl Arena {
     }
 
     pub fn alloc<T>(&self, value: T) -> &mut T {
+        assert_arena_supported::<T>();
         let ptr = self.alloc_uninit::<T>().as_ptr();
         unsafe {
             ptr.write(value);
         }
-        self.register_drop::<T>(ptr);
         unsafe { &mut *ptr }
     }
 
     pub fn alloc_slice_copy<T: Copy>(&self, slice: &[T]) -> &mut [T] {
+        assert_arena_supported::<T>();
         let dst = self.alloc_array_uninit::<T>(slice.len());
         unsafe {
             ptr::copy_nonoverlapping(slice.as_ptr(), dst.as_mut_ptr() as *mut T, slice.len());
@@ -153,6 +126,7 @@ impl Arena {
     }
 
     pub fn alloc_array_uninit<T>(&self, len: usize) -> &mut [MaybeUninit<T>] {
+        assert_arena_supported::<T>();
         if len == 0 {
             return &mut [];
         }
@@ -163,6 +137,7 @@ impl Arena {
     }
 
     pub(crate) fn alloc_raw_array<T>(&self, len: usize) -> NonNull<T> {
+        assert_arena_supported::<T>();
         if len == 0 || size_of::<T>() == 0 {
             return NonNull::dangling();
         }
@@ -173,6 +148,7 @@ impl Arena {
     }
 
     fn alloc_uninit<T>(&self) -> NonNull<T> {
+        assert_arena_supported::<T>();
         if size_of::<T>() == 0 {
             return NonNull::dangling();
         }
@@ -240,21 +216,6 @@ impl Arena {
         *committed = new_committed;
     }
 
-    fn register_drop<T>(&self, ptr: *mut T) {
-        if !needs_drop::<T>() || size_of::<T>() == 0 {
-            return;
-        }
-
-        unsafe fn drop_value<T>(ptr: *mut u8) {
-            ptr.cast::<T>().drop_in_place();
-        }
-
-        self.inner_mut().drops.push(DropRecord {
-            ptr: ptr.cast::<u8>(),
-            drop_fn: drop_value::<T>,
-        });
-    }
-
     fn inner(&self) -> &ArenaInner {
         unsafe { &*self.inner.get() }
     }
@@ -271,8 +232,6 @@ impl Arena {
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        self.clear();
-
         #[cfg(windows)]
         {
             release(self.ptr.as_ptr());
@@ -283,4 +242,12 @@ impl Drop for Arena {
             dealloc(self.ptr.as_ptr(), self.layout);
         }
     }
+}
+
+#[inline]
+fn assert_arena_supported<T>() {
+    assert!(
+        !needs_drop::<T>(),
+        "rux::Arena does not support droppable types"
+    );
 }

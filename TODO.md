@@ -16,5 +16,9 @@
 - [ ] Decide whether `ArenaVec<T>` should support `insert`, `remove`, and `swap_remove`.
 - [ ] Add a separate handle-based storage type instead of overloading `ArenaVec<T>` with stable-identity semantics.
 - [ ] Design a `SlotArena<T>` or similar pool for engine-style entity/component workloads.
+- [ ] Add arena generation tracking so `clear` and `rewind` can invalidate stale arena-backed containers in debug builds.
+- [ ] Add `ArenaVec<T>::invalidate()` or `detach()` for explicit teardown before arena reset boundaries.
+- [ ] Add debug assertions on `ArenaVec<T>` access paths to catch post-invalidation use quickly.
+- [ ] Decide whether to formalize separate arena roles such as permanent, level, and temporary arenas in the API.
 - [ ] Add benchmarks against `Vec<T>` and other arena crates.
 - [ ] Expand the README into an actual design document once the APIs settle.

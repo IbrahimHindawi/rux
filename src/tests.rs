@@ -1,20 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use crate::{Arena, ArenaVec};
-
-    #[derive(Debug)]
-    struct DropCounter {
-        drops: Rc<Cell<usize>>,
-    }
-
-    impl Drop for DropCounter {
-        fn drop(&mut self) {
-            self.drops.set(self.drops.get() + 1);
-        }
-    }
 
     #[repr(align(64))]
     struct Align64(u8);
@@ -41,39 +29,29 @@ mod tests {
     }
 
     #[test]
-    fn temp_arena_rewinds_and_drops_values() {
-        let drops = Rc::new(Cell::new(0));
+    fn temp_arena_rewinds_allocations() {
         let arena = Arena::new(1024);
         let checkpoint = arena.checkpoint();
         let used_before = arena.used();
 
         {
             let temp = arena.temp();
-            let _ = temp.alloc(DropCounter {
-                drops: Rc::clone(&drops),
-            });
+            let _ = temp.alloc([1_u32, 2, 3, 4]);
             let _ = temp.alloc(77_u32);
             assert!(arena.used() > used_before);
         }
 
-        assert_eq!(drops.get(), 1);
         assert_eq!(arena.checkpoint(), checkpoint);
     }
 
     #[test]
-    fn clear_drops_registered_values() {
-        let drops = Rc::new(Cell::new(0));
+    fn clear_rewinds_to_zero() {
         let arena = Arena::new(1024);
-        let _ = arena.alloc(DropCounter {
-            drops: Rc::clone(&drops),
-        });
-        let _ = arena.alloc(DropCounter {
-            drops: Rc::clone(&drops),
-        });
+        let _ = arena.alloc([1_u8; 32]);
+        let _ = arena.alloc([2_u8; 32]);
 
         arena.clear();
 
-        assert_eq!(drops.get(), 2);
         assert_eq!(arena.used(), 0);
     }
 
@@ -92,21 +70,24 @@ mod tests {
     }
 
     #[test]
-    fn arena_vec_drops_elements_on_drop() {
-        let drops = Rc::new(Cell::new(0));
-        let arena = Arena::new(4096);
+    fn arena_rejects_droppable_types() {
+        let arena = Arena::new(1024);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = arena.alloc(String::from("not supported"));
+        }));
 
-        {
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn arena_vec_rejects_droppable_types() {
+        let arena = Arena::new(1024);
+        let result = catch_unwind(AssertUnwindSafe(|| {
             let mut vec = ArenaVec::new_in(&arena);
-            vec.push(DropCounter {
-                drops: Rc::clone(&drops),
-            });
-            vec.push(DropCounter {
-                drops: Rc::clone(&drops),
-            });
-        }
+            vec.push(String::from("not supported"));
+        }));
 
-        assert_eq!(drops.get(), 2);
+        assert!(result.is_err());
     }
 
     #[test]

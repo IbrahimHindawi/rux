@@ -46,3 +46,22 @@ Right now the focus is the memory layer and the first contiguous container:
 - `ArenaVec<T>`
 
 Planned next steps are tracked in `TODO.md`.
+
+## Safety Model
+
+Compared to the original C design, the current Rust version buys a lot in safety and API clarity:
+- Rust generics replace the C monomorphization/code generation layer
+- `ArenaVec<T>` is tied to the lifetime of the arena it allocates from
+- access goes through Rust references and slices instead of raw caller-managed pointer arithmetic
+- `TempArena` makes rollback-scoped allocation explicit instead of relying on convention
+
+This is still a pragmatic arena design, not the most restrictive possible Rust model.
+
+Current tradeoff:
+- `Arena` uses interior mutability so arena-backed containers can grow ergonomically
+- `Arena` and `ArenaVec<T>` are intentionally non-dropping and reject droppable Rust types
+- `ArenaVec<T>` grows geometrically by allocating a new larger buffer in the same arena and copying elements forward
+- old buffers remain in arena-owned memory until rewind or clear
+- manual arena rewind or clear can invalidate existing arena-backed containers if the caller does it at the wrong time
+
+That means the current design is much safer than the original C approach, but it does not yet try to make every invalid post-rewind use impossible at compile time.

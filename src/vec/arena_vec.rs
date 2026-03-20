@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
+use std::mem::{needs_drop, MaybeUninit};
 use std::ops::{Index, IndexMut};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -16,6 +16,7 @@ pub struct ArenaVec<'a, T> {
 
 impl<'a, T> ArenaVec<'a, T> {
     pub fn new_in(arena: &'a Arena) -> Self {
+        assert_vec_supported::<T>();
         Self {
             arena,
             ptr: NonNull::dangling(),
@@ -26,6 +27,7 @@ impl<'a, T> ArenaVec<'a, T> {
     }
 
     pub fn with_capacity_in(cap: usize, arena: &'a Arena) -> Self {
+        assert_vec_supported::<T>();
         let ptr = arena.alloc_raw_array::<T>(cap);
         Self {
             arena,
@@ -49,6 +51,7 @@ impl<'a, T> ArenaVec<'a, T> {
     }
 
     pub fn push(&mut self, value: T) {
+        assert_vec_supported::<T>();
         if self.len == self.cap {
             self.grow();
         }
@@ -60,9 +63,6 @@ impl<'a, T> ArenaVec<'a, T> {
     }
 
     pub fn clear(&mut self) {
-        unsafe {
-            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.ptr.as_ptr(), self.len));
-        }
         self.len = 0;
     }
 
@@ -103,12 +103,6 @@ impl<'a, T> ArenaVec<'a, T> {
     }
 }
 
-impl<T> Drop for ArenaVec<'_, T> {
-    fn drop(&mut self) {
-        self.clear();
-    }
-}
-
 impl<T> Index<usize> for ArenaVec<'_, T> {
     type Output = T;
 
@@ -134,4 +128,12 @@ impl<T> ArenaVec<'_, T> {
     pub(crate) fn spare_capacity(&mut self) -> &mut [MaybeUninit<T>] {
         self.spare_capacity_mut()
     }
+}
+
+#[inline]
+fn assert_vec_supported<T>() {
+    assert!(
+        !needs_drop::<T>(),
+        "rux::ArenaVec does not support droppable element types"
+    );
 }
