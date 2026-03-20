@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::{Arena, ArenaVec};
+use crate::{ArenaScope, ArenaVec};
 
 #[derive(Debug)]
 pub struct String8<'a> {
@@ -9,26 +9,26 @@ pub struct String8<'a> {
 }
 
 impl<'a> String8<'a> {
-    pub fn new_in(arena: &'a Arena) -> Self {
-        let mut bytes = ArenaVec::new_in(arena);
+    pub fn new_in(scope: &'a ArenaScope<'a>) -> Self {
+        let mut bytes = ArenaVec::new_in(scope);
         bytes.push(0);
         Self { bytes }
     }
 
-    pub fn with_capacity_in(capacity: usize, arena: &'a Arena) -> Self {
-        let mut bytes = ArenaVec::with_capacity_in(capacity.saturating_add(1), arena);
+    pub fn with_capacity_in(capacity: usize, scope: &'a ArenaScope<'a>) -> Self {
+        let mut bytes = ArenaVec::with_capacity_in(capacity.saturating_add(1), scope);
         bytes.push(0);
         Self { bytes }
     }
 
-    pub fn from_bytes_in(bytes: &[u8], arena: &'a Arena) -> Self {
-        let mut string = Self::with_capacity_in(bytes.len(), arena);
+    pub fn from_bytes_in(bytes: &[u8], scope: &'a ArenaScope<'a>) -> Self {
+        let mut string = Self::with_capacity_in(bytes.len(), scope);
         string.append_bytes(bytes);
         string
     }
 
-    pub fn from_str_in(value: &str, arena: &'a Arena) -> Self {
-        Self::from_bytes_in(value.as_bytes(), arena)
+    pub fn from_str_in(value: &str, scope: &'a ArenaScope<'a>) -> Self {
+        Self::from_bytes_in(value.as_bytes(), scope)
     }
 
     pub fn len(&self) -> usize {

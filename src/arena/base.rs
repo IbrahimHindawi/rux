@@ -1,5 +1,3 @@
-use std::cell::UnsafeCell;
-use std::marker::PhantomData;
 use std::mem::{align_of, needs_drop, size_of, MaybeUninit};
 use std::ptr::{self, NonNull};
 
@@ -9,11 +7,6 @@ use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use super::raw::{align_up, array_layout, ARENA_BASE_ALIGN};
 #[cfg(windows)]
 use super::raw::{commit, page_size, release, reserve};
-use super::temp::TempArena;
-
-struct ArenaInner {
-    cursor: usize,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Checkpoint {
@@ -23,14 +16,13 @@ pub struct Checkpoint {
 pub struct Arena {
     ptr: NonNull<u8>,
     cap: usize,
+    cursor: usize,
     #[cfg(windows)]
     page_size: usize,
     #[cfg(windows)]
-    committed: UnsafeCell<usize>,
+    committed: usize,
     #[cfg(not(windows))]
     layout: Layout,
-    inner: UnsafeCell<ArenaInner>,
-    _not_sync: PhantomData<*mut ()>,
 }
 
 impl Arena {
@@ -47,10 +39,9 @@ impl Arena {
             return Self {
                 ptr,
                 cap: reserve_size,
+                cursor: 0,
                 page_size,
-                committed: UnsafeCell::new(0),
-                inner: UnsafeCell::new(ArenaInner { cursor: 0 }),
-                _not_sync: PhantomData,
+                committed: 0,
             };
         }
 
@@ -64,9 +55,8 @@ impl Arena {
             Self {
                 ptr,
                 cap,
+                cursor: 0,
                 layout,
-                inner: UnsafeCell::new(ArenaInner { cursor: 0 }),
-                _not_sync: PhantomData,
             }
         }
     }
@@ -76,47 +66,49 @@ impl Arena {
     }
 
     pub fn used(&self) -> usize {
-        self.inner().cursor
+        self.cursor
     }
 
     pub fn remaining(&self) -> usize {
-        self.cap - self.used()
+        self.cap - self.cursor
     }
 
     pub fn checkpoint(&self) -> Checkpoint {
-        let inner = self.inner();
         Checkpoint {
-            cursor: inner.cursor,
+            cursor: self.cursor,
         }
     }
 
-    pub fn rewind(&self, checkpoint: Checkpoint) {
+    pub fn rewind(&mut self, checkpoint: Checkpoint) {
         assert!(
             checkpoint.cursor <= self.cap,
             "checkpoint cursor is out of range"
         );
-
-        self.inner_mut().cursor = checkpoint.cursor;
+        self.cursor = checkpoint.cursor;
     }
 
-    pub fn clear(&self) {
-        self.rewind(Checkpoint { cursor: 0 });
+    pub fn reset(&mut self) {
+        self.cursor = 0;
     }
 
-    pub fn temp(&self) -> TempArena<'_> {
-        TempArena::new(self)
+    pub fn scope(&mut self) -> super::scope::ArenaScope<'_> {
+        super::scope::ArenaScope::new(self)
     }
 
-    pub fn alloc<T>(&self, value: T) -> &mut T {
+    pub fn temp(&mut self) -> super::temp::TempArena<'_> {
+        super::temp::TempArena::new(self)
+    }
+
+    pub fn alloc<T>(&mut self, value: T) -> &mut T {
         assert_arena_supported::<T>();
         let ptr = self.alloc_uninit::<T>().as_ptr();
         unsafe {
             ptr.write(value);
+            &mut *ptr
         }
-        unsafe { &mut *ptr }
     }
 
-    pub fn alloc_slice_copy<T: Copy>(&self, slice: &[T]) -> &mut [T] {
+    pub fn alloc_slice_copy<T: Copy>(&mut self, slice: &[T]) -> &mut [T] {
         assert_arena_supported::<T>();
         let dst = self.alloc_array_uninit::<T>(slice.len());
         unsafe {
@@ -125,7 +117,7 @@ impl Arena {
         }
     }
 
-    pub fn alloc_array_uninit<T>(&self, len: usize) -> &mut [MaybeUninit<T>] {
+    pub fn alloc_array_uninit<T>(&mut self, len: usize) -> &mut [MaybeUninit<T>] {
         assert_arena_supported::<T>();
         if len == 0 {
             return &mut [];
@@ -136,7 +128,7 @@ impl Arena {
         unsafe { std::slice::from_raw_parts_mut(ptr.cast::<MaybeUninit<T>>(), len) }
     }
 
-    pub(crate) fn alloc_raw_array<T>(&self, len: usize) -> NonNull<T> {
+    pub(crate) fn alloc_raw_array<T>(&mut self, len: usize) -> NonNull<T> {
         assert_arena_supported::<T>();
         if len == 0 || size_of::<T>() == 0 {
             return NonNull::dangling();
@@ -147,7 +139,7 @@ impl Arena {
         unsafe { NonNull::new_unchecked(ptr.cast::<T>()) }
     }
 
-    fn alloc_uninit<T>(&self) -> NonNull<T> {
+    fn alloc_uninit<T>(&mut self) -> NonNull<T> {
         assert_arena_supported::<T>();
         if size_of::<T>() == 0 {
             return NonNull::dangling();
@@ -158,7 +150,7 @@ impl Arena {
         unsafe { NonNull::new_unchecked(ptr.cast::<T>()) }
     }
 
-    fn alloc_layout(&self, layout: std::alloc::Layout) -> *mut u8 {
+    fn alloc_layout(&mut self, layout: std::alloc::Layout) -> *mut u8 {
         assert!(
             layout.align() <= ARENA_BASE_ALIGN.max(align_of::<usize>()),
             "requested alignment {} exceeds arena base alignment {}",
@@ -170,8 +162,7 @@ impl Arena {
             return NonNull::<u8>::dangling().as_ptr();
         }
 
-        let inner = self.inner_mut();
-        let start = align_up(inner.cursor, layout.align());
+        let start = align_up(self.cursor, layout.align());
         let end = start
             .checked_add(layout.size())
             .expect("arena allocation overflowed");
@@ -183,16 +174,16 @@ impl Arena {
             end <= self.cap,
             "arena exhausted: requested {} bytes with {} remaining",
             layout.size(),
-            self.cap.saturating_sub(inner.cursor)
+            self.cap.saturating_sub(self.cursor)
         );
 
-        inner.cursor = end;
+        self.cursor = end;
 
         unsafe { self.ptr.as_ptr().add(start) }
     }
 
     #[cfg(windows)]
-    fn ensure_committed(&self, end: usize) {
+    fn ensure_committed(&mut self, end: usize) {
         assert!(
             end <= self.cap,
             "arena exhausted: requested {} bytes beyond reserved capacity {}",
@@ -200,33 +191,19 @@ impl Arena {
             self.cap
         );
 
-        let committed = self.committed_mut();
-        if end <= *committed {
+        if end <= self.committed {
             return;
         }
 
         let new_committed = align_up(end, self.page_size);
-        let commit_size = new_committed - *committed;
-        let result = commit(self.ptr.as_ptr(), *committed, commit_size);
+        let commit_size = new_committed - self.committed;
+        let result = commit(self.ptr.as_ptr(), self.committed, commit_size);
         assert!(
             !result.is_null(),
             "VirtualAlloc commit failed for {} bytes",
             commit_size
         );
-        *committed = new_committed;
-    }
-
-    fn inner(&self) -> &ArenaInner {
-        unsafe { &*self.inner.get() }
-    }
-
-    fn inner_mut(&self) -> &mut ArenaInner {
-        unsafe { &mut *self.inner.get() }
-    }
-
-    #[cfg(windows)]
-    fn committed_mut(&self) -> &mut usize {
-        unsafe { &mut *self.committed.get() }
+        self.committed = new_committed;
     }
 }
 

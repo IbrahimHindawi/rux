@@ -18,8 +18,10 @@ This repo aims to translate the C code above into Rust while preserving its low-
 
 The project now has an initial Rust crate with:
 - `Arena`
+- `ArenaScope`
 - `TempArena`
 - `ArenaVec<T>`
+- `String8`
 
 The current design direction is:
 - allocator primitives use explicit ownership and lifetimes
@@ -34,7 +36,7 @@ The allocator currently:
 - reserves one contiguous virtual memory region up front
 - commits pages lazily as allocations advance
 - keeps a stable base pointer for the lifetime of the arena
-- supports checkpoints, rewind, clear, and temporary rollback scopes through `TempArena`
+- supports checkpoints, rewind, reset, and temporary rollback scopes through `TempArena`
 
 This mirrors the intended power of the original C arena more closely than a normal heap allocation.
 
@@ -42,8 +44,10 @@ This mirrors the intended power of the original C arena more closely than a norm
 
 Right now the focus is the memory layer and the first contiguous container:
 - `Arena`
+- `ArenaScope`
 - `TempArena`
 - `ArenaVec<T>`
+- `String8`
 
 Planned next steps are tracked in `TODO.md`.
 
@@ -51,17 +55,22 @@ Planned next steps are tracked in `TODO.md`.
 
 Compared to the original C design, the current Rust version buys a lot in safety and API clarity:
 - Rust generics replace the C monomorphization/code generation layer
-- `ArenaVec<T>` is tied to the lifetime of the arena it allocates from
+- arena-backed containers are tied to an explicit arena lifetime domain
 - access goes through Rust references and slices instead of raw caller-managed pointer arithmetic
 - `TempArena` makes rollback-scoped allocation explicit instead of relying on convention
 
-This is still a pragmatic arena design, not the most restrictive possible Rust model.
+The design policy is:
+- be very strict at invalidation boundaries such as `reset`, `rewind`, and temporary scopes
+- be ergonomic inside a valid arena scope
+- keep unsafe code tiny and internal
+- keep the arena non-dropping and explicit
 
 Current tradeoff:
-- `Arena` uses interior mutability so arena-backed containers can grow ergonomically
+- `Arena` itself is a plain `&mut self` allocator and does not hand out mutable references from shared access
+- `ArenaScope` is the ergonomic boundary object used by higher-level containers such as `ArenaVec<T>` and `String8`
 - `Arena` and `ArenaVec<T>` are intentionally non-dropping and reject droppable Rust types
 - `ArenaVec<T>` grows geometrically by allocating a new larger buffer in the same arena and copying elements forward
-- old buffers remain in arena-owned memory until rewind or clear
-- manual arena rewind or clear can invalidate existing arena-backed containers if the caller does it at the wrong time
+- old buffers remain in arena-owned memory until rewind or reset
+- safe day-to-day access happens through slices, iterators, and short-lived borrows on containers
 
-That means the current design is much safer than the original C approach, but it does not yet try to make every invalid post-rewind use impossible at compile time.
+This keeps the dangerous parts explicit while keeping ordinary container use close to normal Rust.

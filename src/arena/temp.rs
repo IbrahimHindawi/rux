@@ -1,16 +1,19 @@
-use super::{Arena, Checkpoint};
+use std::ops::{Deref, DerefMut};
+
+use super::{Arena, ArenaScope, Checkpoint};
 
 pub struct TempArena<'a> {
-    arena: &'a Arena,
+    scope: ArenaScope<'a>,
     checkpoint: Checkpoint,
     active: bool,
 }
 
 impl<'a> TempArena<'a> {
-    pub(crate) fn new(arena: &'a Arena) -> Self {
+    pub(crate) fn new(arena: &'a mut Arena) -> Self {
+        let checkpoint = arena.checkpoint();
         Self {
-            arena,
-            checkpoint: arena.checkpoint(),
+            scope: ArenaScope::new(arena),
+            checkpoint,
             active: true,
         }
     }
@@ -19,31 +22,29 @@ impl<'a> TempArena<'a> {
         self.checkpoint
     }
 
-    pub fn alloc<T>(&self, value: T) -> &mut T {
-        self.arena.alloc(value)
-    }
-
-    pub fn alloc_slice_copy<T: Copy>(&self, slice: &[T]) -> &mut [T] {
-        self.arena.alloc_slice_copy(slice)
-    }
-
-    pub fn alloc_array_uninit<T>(&self, len: usize) -> &mut [std::mem::MaybeUninit<T>] {
-        self.arena.alloc_array_uninit(len)
-    }
-
-    pub fn used(&self) -> usize {
-        self.arena.used()
-    }
-
     pub fn commit(mut self) {
         self.active = false;
+    }
+}
+
+impl<'a> Deref for TempArena<'a> {
+    type Target = ArenaScope<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scope
+    }
+}
+
+impl<'a> DerefMut for TempArena<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.scope
     }
 }
 
 impl Drop for TempArena<'_> {
     fn drop(&mut self) {
         if self.active {
-            self.arena.rewind(self.checkpoint);
+            self.scope.rewind(self.checkpoint);
         }
     }
 }

@@ -4,21 +4,21 @@ use std::ops::{Index, IndexMut};
 use std::ptr::{self, NonNull};
 use std::slice;
 
-use crate::arena::Arena;
+use crate::arena::{Arena, ArenaScope};
 
 pub struct ArenaVec<'a, T> {
-    arena: &'a Arena,
+    arena: NonNull<Arena>,
     ptr: NonNull<T>,
     len: usize,
     cap: usize,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<&'a mut T>,
 }
 
 impl<'a, T> ArenaVec<'a, T> {
-    pub fn new_in(arena: &'a Arena) -> Self {
+    pub fn new_in(scope: &'a ArenaScope<'a>) -> Self {
         assert_vec_supported::<T>();
         Self {
-            arena,
+            arena: scope_arena(scope),
             ptr: NonNull::dangling(),
             len: 0,
             cap: 0,
@@ -26,11 +26,11 @@ impl<'a, T> ArenaVec<'a, T> {
         }
     }
 
-    pub fn with_capacity_in(cap: usize, arena: &'a Arena) -> Self {
+    pub fn with_capacity_in(cap: usize, scope: &'a ArenaScope<'a>) -> Self {
         assert_vec_supported::<T>();
-        let ptr = arena.alloc_raw_array::<T>(cap);
+        let ptr = scope.alloc_raw_array::<T>(cap);
         Self {
-            arena,
+            arena: scope_arena(scope),
             ptr,
             len: 0,
             cap,
@@ -82,7 +82,13 @@ impl<'a, T> ArenaVec<'a, T> {
                 .expect("ArenaVec capacity overflowed"),
         };
 
-        let new_ptr = self.arena.alloc_raw_array::<T>(new_cap);
+        let new_ptr = unsafe {
+            self.arena
+                .as_ptr()
+                .as_mut()
+                .expect("arena pointer was null")
+        }
+        .alloc_raw_array::<T>(new_cap);
         if self.len != 0 {
             unsafe {
                 ptr::copy_nonoverlapping(self.ptr.as_ptr(), new_ptr.as_ptr(), self.len);
@@ -136,4 +142,9 @@ fn assert_vec_supported<T>() {
         !needs_drop::<T>(),
         "rux::ArenaVec does not support droppable element types"
     );
+}
+
+#[inline]
+fn scope_arena(scope: &ArenaScope<'_>) -> NonNull<Arena> {
+    scope.arena_ptr()
 }
