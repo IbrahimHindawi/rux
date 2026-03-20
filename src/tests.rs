@@ -2,7 +2,7 @@
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    use crate::{Arena, ArenaVec};
+    use crate::{Arena, ArenaVec, String8};
 
     #[repr(align(64))]
     struct Align64(u8);
@@ -101,5 +101,34 @@ mod tests {
         assert_eq!(*unit, ());
         assert_eq!(*marker, [(); 8]);
         assert_eq!(arena.used(), before);
+    }
+
+    #[test]
+    fn string8_keeps_trailing_nul_and_excludes_it_from_length() {
+        let arena = Arena::new(1024);
+        let string = String8::from_str_in("gin", &arena);
+
+        assert_eq!(string.len(), 3);
+        assert_eq!(string.as_bytes(), b"gin");
+        assert_eq!(string.as_bytes_with_nul(), b"gin\0");
+    }
+
+    #[test]
+    fn string8_append_and_clear_work() {
+        let arena = Arena::new(1024);
+        let mut string = String8::new_in(&arena);
+
+        string.append_str("he");
+        string.append_bytes(b"llo");
+        string.append_byte(b'!');
+
+        assert_eq!(string.as_bytes(), b"hello!");
+        assert_eq!(string.as_c_str().to_bytes_with_nul(), b"hello!\0");
+
+        string.clear();
+
+        assert_eq!(string.len(), 0);
+        assert_eq!(string.as_bytes(), b"");
+        assert_eq!(string.as_bytes_with_nul(), b"\0");
     }
 }
