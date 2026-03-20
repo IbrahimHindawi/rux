@@ -1,0 +1,3 @@
+[submodule "extern/haikal"]
+	path = extern/haikal
+	url = https://github.com/IbrahimHindawi/haikal
